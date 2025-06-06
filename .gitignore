@@ -10,3 +10,7 @@ __pycache__/
 # Bytecode cache
 *.pyc
 
+build.sh
+deploy.sh
+reg.sh
+
