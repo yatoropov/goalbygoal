@@ -179,7 +179,7 @@ async def handle_photo(message: types.Message):
         photo = message.photo[-1]
         file = await bot.get_file(photo.file_id)
         file_bytes = await bot.download_file(file.file_path)
-        file_bytes = await file_bytes.read()
+        file_bytes = file_bytes.read()
 
         is_today, info = await is_photo_from_today(file_bytes)
 
