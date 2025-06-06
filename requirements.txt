@@ -3,3 +3,4 @@ python-dotenv
 pillow
 google-cloud-firestore
 aiohttp
+pytz
