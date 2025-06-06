@@ -1,5 +1,5 @@
 # goalbygoal
-TG bot for efficient communnication between parents and children
+TG bot for efficient communication between parents and children
 
    python:3.11.8-slim-bullseye
    aiogram==2.25.2
