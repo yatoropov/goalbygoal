@@ -85,6 +85,21 @@ async def update_user(user_id, data):
 
 # --- EXIF analysis for photo
 async def is_photo_from_today(file_bytes, timezone='Europe/Kyiv'):
+    """Check if a photo was taken today.
+
+    Parameters
+    ----------
+    file_bytes : bytes
+        Raw bytes of the image file.
+    timezone : str, optional
+        Timezone used to interpret the EXIF timestamp. Defaults to ``'Europe/Kyiv'``.
+
+    Returns
+    -------
+    tuple[bool, str]
+        ``True`` and an informational message if the photo is from today,
+        otherwise ``False`` and a note describing the issue.
+    """
     try:
         img = Image.open(BytesIO(file_bytes))
         exif_data = img.getexif()
