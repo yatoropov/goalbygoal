@@ -24,9 +24,19 @@ dp = Dispatcher(bot)
 # --- Firestore (default)
 db = firestore.Client(project=os.getenv('GOOGLE_CLOUD_PROJECT'), database="(default)")
 
-PARENT_MENU = ReplyKeyboardMarkup(resize_keyboard=True).add("Додати задачу").add("Історія")
+PARENT_MENU = (
+    ReplyKeyboardMarkup(resize_keyboard=True)
+    .add("Додати задачу")
+    .add("Історія")
+    .add("Додати дитину")
+    .add("Видалити дитину")
+)
 CHILD_MENU = ReplyKeyboardMarkup(resize_keyboard=True).add("Мої задачі")
 TASK_LIST = ["Застелити ліжко", "Помити чашку", "Почистити зуби"]
+
+# Runtime state for simple flows
+parent_states = {}
+child_states = {}
 
 def gen_invite_code():
     import random, string
@@ -75,6 +85,18 @@ def add_child_to_parent_sync(parent_id, child_id):
 async def add_child_to_parent(parent_id, child_id):
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, add_child_to_parent_sync, parent_id, child_id)
+
+def remove_child_from_parent_sync(parent_id, child_id):
+    parent = get_user_sync(parent_id)
+    if parent:
+        children = parent.get('children', [])
+        if child_id in children:
+            children.remove(child_id)
+            db.collection('users').document(str(parent_id)).update({'children': children})
+
+async def remove_child_from_parent(parent_id, child_id):
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, remove_child_from_parent_sync, parent_id, child_id)
 
 def update_user_sync(user_id, data):
     db.collection('users').document(str(user_id)).update(data)
@@ -155,21 +177,104 @@ async def process_invite(message: types.Message):
         if not parent or parent.get('role') != 'parent':
             await message.answer("Помилка: інвайт-код неактуальний або батько не створений.")
             return
-        await save_user(message.from_user.id, {'role': 'child', 'parent': parent_id, 'tasks': {}})
+        await save_user(message.from_user.id, {"role": "child", "parent": parent_id, "tasks": {}})
         await add_child_to_parent(parent_id, message.from_user.id)
-        await message.answer("🎉 Ви успішно приєдналися до GoalByGoal! Чекайте на задачі від батьків.", reply_markup=CHILD_MENU)
-        await bot.send_message(parent_id, "👦👧 Дитина приєдналася до вашої сімʼї в GoalByGoal. Тепер можете додавати задачі.", reply_markup=PARENT_MENU)
+        child_states[message.from_user.id] = "awaiting_name"
+        await message.answer("🎉 Ви успішно приєдналися до GoalByGoal! Введіть своє ім'я:")
+        await bot.send_message(parent_id, "👦👧 Дитина приєдналася до вашої сімʼї в GoalByGoal. Очікуємо її ім'я.", reply_markup=PARENT_MENU)
     else:
         await message.answer("Інвайт-код невірний. Спробуйте ще раз:")
+
+@dp.message_handler(lambda m: child_states.get(m.from_user.id) == "awaiting_name")
+async def set_child_name(message: types.Message):
+    await update_user(message.from_user.id, {"name": message.text})
+    state_parent = (await get_user(message.from_user.id)).get("parent")
+    child_states.pop(message.from_user.id, None)
+    await message.answer("Ім'я збережено!", reply_markup=CHILD_MENU)
+    if state_parent:
+        await bot.send_message(state_parent, f"Дитина тепер має ім'я: {message.text}", reply_markup=PARENT_MENU)
 
 @dp.message_handler(lambda m: m.text == "Додати задачу")
 async def add_task(message: types.Message):
     user = await get_user(message.from_user.id)
-    if user and user.get('role') == 'parent':
+    if user and user.get("role") == "parent":
+        children = user.get("children", [])
+        if not children:
+            await message.answer("У вас немає підключених дітей.", reply_markup=PARENT_MENU)
+            return
+        if len(children) == 1:
+            parent_states[message.from_user.id] = {"action": "assign_task", "child_id": children[0]}
+            kb = ReplyKeyboardMarkup(resize_keyboard=True)
+            for t in TASK_LIST:
+                kb.add(t)
+            await message.answer("Оберіть задачу:", reply_markup=kb)
+        else:
+            kb = ReplyKeyboardMarkup(resize_keyboard=True)
+            mapping = {}
+            for child_id in children:
+                child = await get_user(child_id)
+                name = child.get("name") or str(child_id)[-6:]
+                label = f"{name} ({str(child_id)[-6:]})"
+                mapping[label] = child_id
+                kb.add(label)
+            parent_states[message.from_user.id] = {"action": "select_child", "map": mapping}
+            await message.answer("Оберіть дитину:", reply_markup=kb)
+
+@dp.message_handler(lambda m: m.text == "Додати дитину")
+async def parent_add_child(message: types.Message):
+    user = await get_user(message.from_user.id)
+    if user and user.get("role") == "parent":
+        code = gen_invite_code()
+        await save_invite(code, message.from_user.id)
+        await update_user(message.from_user.id, {"invite": code})
+        await message.answer(
+            f"Новий інвайт-код для дитини: {code}", reply_markup=PARENT_MENU
+        )
+
+@dp.message_handler(lambda m: m.text == "Видалити дитину")
+async def parent_remove_child(message: types.Message):
+    user = await get_user(message.from_user.id)
+    if user and user.get("role") == "parent":
+        children = user.get("children", [])
+        if not children:
+            await message.answer("У вас немає підключених дітей.", reply_markup=PARENT_MENU)
+            return
+        kb = ReplyKeyboardMarkup(resize_keyboard=True)
+        mapping = {}
+        for child_id in children:
+            child = await get_user(child_id)
+            name = child.get("name") or str(child_id)[-6:]
+            label = f"{name} ({str(child_id)[-6:]})"
+            mapping[label] = child_id
+            kb.add(label)
+        parent_states[message.from_user.id] = {"action": "remove_child", "map": mapping}
+        await message.answer("Оберіть дитину для видалення:", reply_markup=kb)
+
+@dp.message_handler(lambda m: parent_states.get(m.from_user.id, {}).get("action") == "remove_child")
+async def confirm_remove_child(message: types.Message):
+    state = parent_states.get(message.from_user.id, {})
+    child_id = state.get("map", {}).get(message.text)
+    if child_id:
+        await remove_child_from_parent(message.from_user.id, child_id)
+        await update_user(child_id, {"parent": None})
+        parent_states.pop(message.from_user.id, None)
+        await message.answer("Дитину видалено.", reply_markup=PARENT_MENU)
+        await bot.send_message(child_id, "Вас видалили з сім'ї GoalByGoal.")
+    else:
+        await message.answer("Оберіть дитину зі списку")
+
+@dp.message_handler(lambda m: parent_states.get(m.from_user.id, {}).get("action") == "select_child")
+async def choose_child(message: types.Message):
+    state = parent_states.get(message.from_user.id, {})
+    child_id = state.get("map", {}).get(message.text)
+    if child_id:
         kb = ReplyKeyboardMarkup(resize_keyboard=True)
         for t in TASK_LIST:
             kb.add(t)
+        parent_states[message.from_user.id] = {"action": "assign_task", "child_id": child_id}
         await message.answer("Оберіть задачу:", reply_markup=kb)
+    else:
+        await message.answer("Оберіть дитину зі списку")
 
 @dp.message_handler(lambda m: m.text in TASK_LIST)
 async def select_task(message: types.Message):
@@ -178,7 +283,11 @@ async def select_task(message: types.Message):
         tasks = user.get('tasks', {})
         tasks[message.text] = {'reward': 20, 'active': True}
         await update_user(message.from_user.id, {'tasks': tasks})
-        children = user.get('children', [])
+        state = parent_states.pop(message.from_user.id, None)
+        if state and state.get('action') == 'assign_task':
+            children = [state.get('child_id')]
+        else:
+            children = user.get('children', [])
         for child_id in children:
             child = await get_user(child_id)
             child_tasks = child.get('tasks', {}) if child else {}
