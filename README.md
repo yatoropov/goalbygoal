@@ -54,6 +54,19 @@ docker build -t goalbygoal .
 docker run --env-file .env -p 8080:8080 goalbygoal
 ```
 
+## Billing bot
+
+The repository also contains `billing.py` which replicates the old Google Apps
+Script for generating invoices from Google Docs templates.  It uses Google
+Sheets and Drive APIs and can be deployed on Cloud Run in the same way as the
+main bot.  Configure the additional environment variables in `.env.example` and
+start the service:
+
+```bash
+pip install -r requirements.txt
+python billing.py
+```
+
 ## Health check
 
 The container exposes `/health` endpoint which returns `OK` and can be used for monitoring.
